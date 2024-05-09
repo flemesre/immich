@@ -71,7 +71,7 @@ export class PersonService {
     @Inject(IStorageRepository) private storageRepository: IStorageRepository,
     @Inject(IJobRepository) private jobRepository: IJobRepository,
     @Inject(ISearchRepository) private smartInfoRepository: ISearchRepository,
-    @Inject(ICryptoRepository) cryptoRepository: ICryptoRepository,
+    @Inject(ICryptoRepository) private cryptoRepository: ICryptoRepository,
     @Inject(ILoggerRepository) private logger: ILoggerRepository,
   ) {
     this.access = AccessCore.create(accessRepository);
@@ -348,15 +348,17 @@ export class PersonService {
 
     if (faces.length > 0) {
       await this.jobRepository.queue({ name: JobName.QUEUE_FACIAL_RECOGNITION, data: { force: false } });
+      const faceId = this.cryptoRepository.randomUUID();
       const mappedFaces = faces.map((face) => ({
+        faceId,
         assetId: asset.id,
-        embedding: face.embedding,
         imageHeight,
         imageWidth,
         boundingBoxX1: face.boundingBox.x1,
         boundingBoxY1: face.boundingBox.y1,
         boundingBoxX2: face.boundingBox.x2,
         boundingBoxY2: face.boundingBox.y2,
+        faceSearch: { faceId, embedding: face.embedding },
       }));
 
       const faceIds = await this.repository.createFaces(mappedFaces);
@@ -410,11 +412,16 @@ export class PersonService {
 
     const face = await this.repository.getFaceByIdWithAssets(
       id,
-      { person: true, asset: true },
-      { id: true, personId: true, embedding: true },
+      { person: true, asset: true, faceSearch: true },
+      { id: true, personId: true, faceSearch: { embedding: true } },
     );
     if (!face || !face.asset) {
       this.logger.warn(`Face ${id} not found`);
+      return JobStatus.FAILED;
+    }
+
+    if (!face.faceSearch?.embedding) {
+      this.logger.warn(`Face ${id} does not have an embedding`);
       return JobStatus.FAILED;
     }
 
@@ -425,7 +432,7 @@ export class PersonService {
 
     const matches = await this.smartInfoRepository.searchFaces({
       userIds: [face.asset.ownerId],
-      embedding: face.embedding,
+      embedding: face.faceSearch.embedding,
       maxDistance: machineLearning.facialRecognition.maxDistance,
       numResults: machineLearning.facialRecognition.minFaces,
     });
@@ -449,7 +456,7 @@ export class PersonService {
     if (!personId) {
       const matchWithPerson = await this.smartInfoRepository.searchFaces({
         userIds: [face.asset.ownerId],
-        embedding: face.embedding,
+        embedding: face.faceSearch.embedding,
         maxDistance: machineLearning.facialRecognition.maxDistance,
         numResults: 1,
         hasPerson: true,
